@@ -1,5 +1,20 @@
 node_modules
-# Keep environment variables out of version control
-.env
 
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Next.js build output
+.next/
+out/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# Prisma generated client
 /generated/prisma
+
+# Misc
+.DS_Store
+*.log
