@@ -1,0 +1,542 @@
+// ElectiVe Bidding Platform — Prisma Schema
+// Supports Admin, Professor, Student roles
+// Bidding: MRB, tie-break, carry-forward, cross-programme quotas
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  PROFESSOR
+  STUDENT
+}
+
+enum BatchType {
+  BM
+  HRM
+  BOTH
+}
+
+enum EligibilityType {
+  BM_ONLY
+  HRM_ONLY
+  BOTH
+}
+
+enum BiddingRoundStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  RESULTS_PUBLISHED
+}
+
+enum AllocationStatus {
+  TENTATIVE
+  WON
+  LOST
+  WITHDRAWN
+  CONFIRMED
+  WAITLISTED
+}
+
+enum TieBreakMethod {
+  CQPI_DESC
+  PREREQ_GRADE_DESC
+  COMPOSITE_RANK
+  LOTTERY
+  MANUAL_RANKED_LIST
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+  BIDDING_OPEN
+  BIDDING_CLOSED
+  CANCELLED
+  FINALISED
+}
+
+enum AuditAction {
+  BID_PLACED
+  BID_UPDATED
+  BID_WITHDRAWN
+  ALLOCATION_OVERRIDE
+  COURSE_CREATED
+  COURSE_UPDATED
+  COURSE_CANCELLED
+  ROUND_OPENED
+  ROUND_CLOSED
+  STUDENT_IMPORTED
+  PROFESSOR_IMPORTED
+  TIEBREAK_RESOLVED
+  POLICY_CHANGED
+  CONFIRMATION_ACTION
+  POINTS_REIMBURSED
+}
+
+enum ImportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+// ─────────────────────────────────────────────────────────────
+// CORE AUTH
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  hashedPassword String
+  role           UserRole
+  name           String
+  phone          String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  studentProfile   StudentProfile?
+  professorProfile ProfessorProfile?
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+  sessions         Session[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROFILES
+// ─────────────────────────────────────────────────────────────
+
+model StudentProfile {
+  id           String    @id @default(cuid())
+  userId       String    @unique
+  rollNumber   String    @unique
+  batchType    BatchType
+  programme    String
+  yearOfStudy  Int       @default(1)
+  cqpi         Float?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bids                   Bid[]
+  allocations            AllocationResult[]
+  confirmations          ConfirmationAction[]
+  waitlistEntries        WaitlistEntry[]
+  creditEnrollments      CreditEnrollment[]
+  pointAllocations       StudentPointAllocation[]
+
+  @@index([rollNumber])
+  @@index([batchType])
+}
+
+model ProfessorProfile {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  employeeId   String   @unique
+  department   String
+  designation  String?
+  bio          String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseOfferings CourseOffering[]
+
+  @@index([employeeId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACADEMIC STRUCTURE
+// ─────────────────────────────────────────────────────────────
+
+model AcademicTerm {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  biddingCycles BiddingCycle[]
+  courses       Course[]
+
+  @@index([isActive])
+}
+
+model BiddingCycle {
+  id                    String   @id @default(cuid())
+  name                  String
+  academicTermId        String
+  totalPointsPerStudent Int      @default(1000)
+  allowCarryForward     Boolean  @default(false)
+  enforceMinOneBid      Boolean  @default(false)
+  crossProgrammeEnabled Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  academicTerm     AcademicTerm             @relation(fields: [academicTermId], references: [id])
+  biddingRounds    BiddingRound[]
+  pointAllocations StudentPointAllocation[]
+
+  @@index([academicTermId])
+}
+
+model StudentPointAllocation {
+  id             String   @id @default(cuid())
+  studentId      String
+  biddingCycleId String
+  totalPoints    Int
+  usedPoints     Int      @default(0)
+  carriedForward Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  student      StudentProfile @relation(fields: [studentId], references: [id])
+  biddingCycle BiddingCycle   @relation(fields: [biddingCycleId], references: [id])
+
+  @@unique([studentId, biddingCycleId])
+  @@index([studentId])
+  @@index([biddingCycleId])
+}
+
+model BiddingRound {
+  id                  String             @id @default(cuid())
+  biddingCycleId      String
+  roundNumber         Int
+  name                String
+  status              BiddingRoundStatus @default(DRAFT)
+  openAt              DateTime?
+  closeAt             DateTime?
+  resultsPublishedAt  DateTime?
+  isConfirmationRound Boolean            @default(false)
+  quotaRelaxed        Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  biddingCycle BiddingCycle       @relation(fields: [biddingCycleId], references: [id])
+  bids         Bid[]
+  allocations  AllocationResult[]
+
+  @@unique([biddingCycleId, roundNumber])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// COURSES
+// ─────────────────────────────────────────────────────────────
+
+model Course {
+  id             String          @id @default(cuid())
+  code           String          @unique
+  title          String
+  description    String?
+  credits        Int
+  academicTermId String
+  status         CourseStatus    @default(DRAFT)
+  eligibility    EligibilityType @default(BOTH)
+  totalSeats     Int
+  bmQuota        Int?
+  hrmQuota       Int?
+  minEnrollment  Int             @default(5)
+  prerequisites  String[]
+  schedule       String?
+  learningGoals  String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  academicTerm   AcademicTerm      @relation(fields: [academicTermId], references: [id])
+  offerings      CourseOffering[]
+  tieBreakPolicy TieBreakPolicy?
+  auditLogs      AuditLog[]
+
+  @@index([academicTermId])
+  @@index([eligibility])
+  @@index([status])
+}
+
+model CourseOffering {
+  id             String   @id @default(cuid())
+  courseId       String
+  professorId    String
+  seatCap        Int
+  bmSeatCap      Int?
+  hrmSeatCap     Int?
+  mrbPoints      Int      @default(0)
+  isPublished    Boolean  @default(false)
+  publishedAt    DateTime?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  course      Course           @relation(fields: [courseId], references: [id])
+  professor   ProfessorProfile @relation(fields: [professorId], references: [id])
+  bids        Bid[]
+  allocations AllocationResult[]
+  waitlist    WaitlistEntry[]
+  quotaRules  QuotaRule[]
+
+  @@unique([courseId, professorId])
+  @@index([courseId])
+  @@index([professorId])
+}
+
+model TieBreakPolicy {
+  id               String         @id @default(cuid())
+  courseId         String         @unique
+  method           TieBreakMethod
+  prereqCourseCode String?
+  compositeWeights Json?
+  manualRankedList Json?
+  lotteryAllowed   Boolean        @default(false)
+  isLocked         Boolean        @default(false)
+  lockedAt         DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  course Course @relation(fields: [courseId], references: [id])
+}
+
+// ─────────────────────────────────────────────────────────────
+// BIDDING
+// ─────────────────────────────────────────────────────────────
+
+model Bid {
+  id               String   @id @default(cuid())
+  studentId        String
+  courseOfferingId String
+  biddingRoundId   String
+  pointsAllocated  Int
+  version          Int      @default(1)
+  isActive         Boolean  @default(true)
+  placedAt         DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  student        StudentProfile @relation(fields: [studentId], references: [id])
+  courseOffering CourseOffering @relation(fields: [courseOfferingId], references: [id])
+  biddingRound   BiddingRound   @relation(fields: [biddingRoundId], references: [id])
+  history        BidHistory[]
+
+  @@unique([studentId, courseOfferingId, biddingRoundId])
+  @@index([studentId])
+  @@index([courseOfferingId])
+  @@index([biddingRoundId])
+}
+
+model BidHistory {
+  id           String   @id @default(cuid())
+  bidId        String
+  pointsBefore Int
+  pointsAfter  Int
+  action       String
+  performedBy  String
+  performedAt  DateTime @default(now())
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@index([bidId])
+}
+
+model AllocationResult {
+  id               String           @id @default(cuid())
+  studentId        String
+  courseOfferingId String
+  biddingRoundId   String
+  status           AllocationStatus @default(TENTATIVE)
+  pointsUsed       Int
+  tieBreakApplied  Boolean          @default(false)
+  tieBreakRank     Int?
+  isOverride       Boolean          @default(false)
+  overrideReason   String?
+  allocatedAt      DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  student        StudentProfile     @relation(fields: [studentId], references: [id])
+  courseOffering CourseOffering     @relation(fields: [courseOfferingId], references: [id])
+  biddingRound   BiddingRound       @relation(fields: [biddingRoundId], references: [id])
+  confirmation   ConfirmationAction?
+
+  @@unique([studentId, courseOfferingId, biddingRoundId])
+  @@index([studentId])
+  @@index([courseOfferingId])
+  @@index([status])
+}
+
+model ConfirmationAction {
+  id                 String   @id @default(cuid())
+  allocationResultId String   @unique
+  studentId          String
+  action             String
+  reason             String?
+  performedAt        DateTime @default(now())
+
+  allocationResult AllocationResult @relation(fields: [allocationResultId], references: [id])
+  student          StudentProfile   @relation(fields: [studentId], references: [id])
+
+  @@index([studentId])
+}
+
+model WaitlistEntry {
+  id               String   @id @default(cuid())
+  studentId        String
+  courseOfferingId String
+  position         Int
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  student        StudentProfile @relation(fields: [studentId], references: [id])
+  courseOffering CourseOffering @relation(fields: [courseOfferingId], references: [id])
+
+  @@unique([studentId, courseOfferingId])
+  @@index([courseOfferingId, position])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CREDIT CONSTRAINTS
+// ─────────────────────────────────────────────────────────────
+
+model CreditConstraint {
+  id         String    @id @default(cuid())
+  batchType  BatchType
+  minCredits Int
+  maxCredits Int
+  termId     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([batchType])
+}
+
+model CreditEnrollment {
+  id             String   @id @default(cuid())
+  studentId      String
+  academicTermId String
+  totalCredits   Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  student StudentProfile @relation(fields: [studentId], references: [id])
+
+  @@unique([studentId, academicTermId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATIONS & AUDIT
+// ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  channel   NotificationChannel @default(IN_APP)
+  isRead    Boolean             @default(false)
+  createdAt DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+}
+
+model Announcement {
+  id          String    @id @default(cuid())
+  title       String
+  body        String
+  targetRole  UserRole?
+  isActive    Boolean   @default(true)
+  publishedAt DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  performedBy String
+  action      AuditAction
+  entityType  String
+  entityId    String
+  courseId    String?
+  metadata    Json?
+  ipAddress   String?
+  performedAt DateTime    @default(now())
+
+  user   User    @relation(fields: [performedBy], references: [id])
+  course Course? @relation(fields: [courseId], references: [id])
+
+  @@index([performedBy])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([performedAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// IMPORT JOBS
+// ─────────────────────────────────────────────────────────────
+
+model ImportJob {
+  id          String          @id @default(cuid())
+  type        String
+  status      ImportJobStatus @default(PENDING)
+  fileName    String
+  totalRows   Int             @default(0)
+  successRows Int             @default(0)
+  failedRows  Int             @default(0)
+  errors      Json?
+  initiatedBy String
+  createdAt   DateTime        @default(now())
+  completedAt DateTime?
+
+  @@index([type, status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// QUOTA RULES (cross-programme)
+// ─────────────────────────────────────────────────────────────
+
+model QuotaRule {
+  id               String    @id @default(cuid())
+  courseOfferingId String
+  biddingRoundId   String
+  batchType        BatchType
+  quota            Int
+  isRelaxed        Boolean   @default(false)
+  relaxedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  courseOffering CourseOffering @relation(fields: [courseOfferingId], references: [id])
+
+  @@unique([courseOfferingId, biddingRoundId, batchType])
+}
